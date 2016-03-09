@@ -94,8 +94,7 @@ static void host_send_icmp4(uint8_t tos, struct in_addr *src,
 	} __attribute__ ((__packed__)) header;
 	struct iovec iov[2];
 
-	header.pi.flags = 0;
-	header.pi.proto = htons(ETH_P_IP);
+	TUN_SET_PROTO(&header.pi,  ETH_P_IP);
 	header.ip4.ver_ihl = 0x45;
 	header.ip4.tos = tos;
 	header.ip4.length = htons(sizeof(header.ip4) + sizeof(header.icmp) +
@@ -156,6 +155,7 @@ static void host_handle_icmp4(struct pkt *p)
 	}
 }
 
+
 static void xlate_header_4to6(struct pkt *p, struct ip6 *ip6,
 		int payload_length)
 {
@@ -211,24 +211,25 @@ static void xlate_4to6_data(struct pkt *p)
 		struct tun_pi pi;
 		struct ip6 ip6;
 		struct ip6_frag ip6_frag;
-	} __attribute__ ((__packed__)) header;
+	} __attribute__ ((__packed__)) *header;
 	struct cache_entry *src = NULL, *dest = NULL;
 	struct iovec iov[2];
 	int no_frag_hdr = 0;
 	uint16_t off = ntohs(p->ip4->flags_offset);
 	int frag_size;
 
+	header = (void*) &p->new_header;
 	frag_size = gcfg->ipv6_offlink_mtu;
 	if (frag_size > gcfg->mtu)
 		frag_size = gcfg->mtu;
 	frag_size -= sizeof(struct ip6);
 
-	if (map_ip4_to_ip6(&header.ip6.dest, &p->ip4->dest, &dest)) {
+	if (map_ip4_to_ip6(&header->ip6.dest, &p->ip4->dest, &dest)) {
 		host_send_icmp4_error(3, 1, 0, p);
 		return;
 	}
 
-	if (map_ip4_to_ip6(&header.ip6.src, &p->ip4->src, &src)) {
+	if (map_ip4_to_ip6(&header->ip6.src, &p->ip4->src, &src)) {
 		host_send_icmp4_error(3, 10, 0, p);
 		return;
 	}
@@ -255,10 +256,10 @@ static void xlate_4to6_data(struct pkt *p)
 		}
 	}
 
-	xlate_header_4to6(p, &header.ip6, p->data_len);
-	--header.ip6.hop_limit;
+	xlate_header_4to6(p, &header->ip6, p->data_len);
+	--header->ip6.hop_limit;
 
-	if (xlate_payload_4to6(p, &header.ip6) < 0)
+	if (xlate_payload_4to6(p, &header->ip6) < 0)
 		return;
 
 	if (src)
@@ -266,38 +267,36 @@ static void xlate_4to6_data(struct pkt *p)
 	if (dest)
 		dest->flags |= CACHE_F_SEEN_4TO6;
 
-	header.pi.flags = 0;
-	header.pi.proto = htons(ETH_P_IPV6);
+	TUN_SET_PROTO(&header->pi,  ETH_P_IPV6);
 
 	if (no_frag_hdr) {
-		iov[0].iov_base = &header;
+		iov[0].iov_base = header;
 		iov[0].iov_len = sizeof(struct tun_pi) + sizeof(struct ip6);
 		iov[1].iov_base = p->data;
 		iov[1].iov_len = p->data_len;
 
-		if (writev(gcfg->tun_fd, iov, 2) < 0)
-			slog(LOG_WARNING, "error writing packet to tun "
-					"device: %s\n", strerror(errno));
+		p->new_header_len = sizeof(struct tun_pi) + sizeof(struct ip6);
+		p->flush_flag = 1;
 	} else {
-		header.ip6_frag.next_header = header.ip6.next_header;
-		header.ip6_frag.reserved = 0;
-		header.ip6_frag.ident = htonl(ntohs(p->ip4->ident));
+		header->ip6_frag.next_header = header->ip6.next_header;
+		header->ip6_frag.reserved = 0;
+		header->ip6_frag.ident = htonl(ntohs(p->ip4->ident));
 
-		header.ip6.next_header = 44;
+		header->ip6.next_header = 44;
 
-		iov[0].iov_base = &header;
-		iov[0].iov_len = sizeof(header);
+		iov[0].iov_base = header;
+		iov[0].iov_len = sizeof(*header);
 
 		off = (off & IP4_F_MASK) * 8;
-		frag_size = (frag_size - sizeof(header.ip6_frag)) & ~7;
+		frag_size = (frag_size - sizeof(header->ip6_frag)) & ~7;
 
 		while (p->data_len > 0) {
 			if (p->data_len < frag_size)
 				frag_size = p->data_len;
 
-			header.ip6.payload_length =
+			header->ip6.payload_length =
 				htons(sizeof(struct ip6_frag) + frag_size);
-			header.ip6_frag.offset_flags = htons(off);
+			header->ip6_frag.offset_flags = htons(off);
 
 			iov[1].iov_base = p->data;
 			iov[1].iov_len = frag_size;
@@ -308,14 +307,14 @@ static void xlate_4to6_data(struct pkt *p)
 
 			if (p->data_len || (p->ip4->flags_offset &
 							htons(IP4_F_MF)))
-				header.ip6_frag.offset_flags |= htons(IP6_F_MF);
+				header->ip6_frag.offset_flags |= htons(IP6_F_MF);
 
 			if (writev(gcfg->tun_fd, iov, 2) < 0) {
-				slog(LOG_WARNING, "error writing packet to "
-						"tun device: %s\n",
-						strerror(errno));
-				return;
-			}
+                               slog(LOG_WARNING, "error writing packet to "
+                                               "tun device: %s\n",
+                                               strerror(errno));
+                               return;
+                        }
 		}
 	}
 }
@@ -514,8 +513,7 @@ static void xlate_4to6_icmp_error(struct pkt *p)
 						sizeof(header.ip6_em)),
 				ip_checksum(p_em.data, p_em.data_len)));
 
-	header.pi.flags = 0;
-	header.pi.proto = htons(ETH_P_IPV6);
+	TUN_SET_PROTO(&header.pi,  ETH_P_IPV6);
 
 	iov[0].iov_base = &header;
 	iov[0].iov_len = sizeof(header);
@@ -566,8 +564,7 @@ static void host_send_icmp6(uint8_t tc, struct in6_addr *src,
 	} __attribute__ ((__packed__)) header;
 	struct iovec iov[2];
 
-	header.pi.flags = 0;
-	header.pi.proto = htons(ETH_P_IPV6);
+	TUN_SET_PROTO(&header.pi,  ETH_P_IPV6);
 	header.ip6.ver_tc_fl = htonl((0x6 << 28) | (tc << 20));
 	header.ip6.payload_length = htons(sizeof(header.icmp) + data_len);
 	header.ip6.next_header = 58;
@@ -588,6 +585,8 @@ static void host_send_icmp6(uint8_t tc, struct in6_addr *src,
 	if (writev(gcfg->tun_fd, iov, data_len ? 2 : 1) < 0)
 		slog(LOG_WARNING, "error writing packet to tun device: %s\n",
 				strerror(errno));
+
+	slog(LOG_WARNING, "Wrote somethinh\n");
 }
 
 static void host_send_icmp6_error(uint8_t type, uint8_t code, uint32_t word,
@@ -698,16 +697,17 @@ static void xlate_6to4_data(struct pkt *p)
 	struct {
 		struct tun_pi pi;
 		struct ip4 ip4;
-	} __attribute__ ((__packed__)) header;
+	} __attribute__ ((__packed__)) *header; 
 	struct cache_entry *src = NULL, *dest = NULL;
 	struct iovec iov[2];
 
-	if (map_ip6_to_ip4(&header.ip4.dest, &p->ip6->dest, &dest, 0)) {
+	header = (void*) &p->new_header;
+	if (map_ip6_to_ip4(&header->ip4.dest, &p->ip6->dest, &dest, 0)) {
 		host_send_icmp6_error(1, 0, 0, p);
 		return;
 	}
 
-	if (map_ip6_to_ip4(&header.ip4.src, &p->ip6->src, &src, 1)) {
+	if (map_ip6_to_ip4(&header->ip4.src, &p->ip6->src, &src, 1)) {
 		host_send_icmp6_error(1, 5, 0, p);
 		return;
 	}
@@ -717,10 +717,10 @@ static void xlate_6to4_data(struct pkt *p)
 		return;
 	}
 
-	xlate_header_6to4(p, &header.ip4, p->data_len, dest);
-	--header.ip4.ttl;
+	xlate_header_6to4(p, &header->ip4, p->data_len, dest);
+	--header->ip4.ttl;
 
-	if (xlate_payload_6to4(p, &header.ip4) < 0)
+	if (xlate_payload_6to4(p, &header->ip4) < 0)
 		return;
 
 	if (src)
@@ -728,19 +728,17 @@ static void xlate_6to4_data(struct pkt *p)
 	if (dest)
 		dest->flags |= CACHE_F_SEEN_6TO4;
 
-	header.pi.flags = 0;
-	header.pi.proto = htons(ETH_P_IP);
+	TUN_SET_PROTO(&header->pi, ETH_P_IP);
 
-	header.ip4.cksum = ip_checksum(&header.ip4, sizeof(header.ip4));
+	header->ip4.cksum = ip_checksum(&header->ip4, sizeof(header->ip4));
 
-	iov[0].iov_base = &header;
-	iov[0].iov_len = sizeof(header);
+	iov[0].iov_base = header;
+	iov[0].iov_len = sizeof(*header);
 	iov[1].iov_base = p->data;
 	iov[1].iov_len = p->data_len;
 
-	if (writev(gcfg->tun_fd, iov, 2) < 0)
-		slog(LOG_WARNING, "error writing packet to tun device: %s\n",
-				strerror(errno));
+	p->new_header_len = sizeof(*header);
+	p->flush_flag = 1;
 }
 
 static int parse_ip6(struct pkt *p)
@@ -932,8 +930,7 @@ static void xlate_6to4_icmp_error(struct pkt *p)
 							sizeof(header.ip4_em)),
 				ip_checksum(p_em.data, p_em.data_len));
 
-	header.pi.flags = 0;
-	header.pi.proto = htons(ETH_P_IP);
+	TUN_SET_PROTO(&header.pi, ETH_P_IP);
 
 	iov[0].iov_base = &header;
 	iov[0].iov_len = sizeof(header);

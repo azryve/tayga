@@ -53,7 +53,7 @@ am__installdirs = "$(DESTDIR)$(sbindir)" "$(DESTDIR)$(man5dir)" \
 	"$(DESTDIR)$(man8dir)" "$(DESTDIR)$(sysconfdir)"
 PROGRAMS = $(sbin_PROGRAMS)
 am_tayga_OBJECTS = nat64.$(OBJEXT) addrmap.$(OBJEXT) dynamic.$(OBJEXT) \
-	tayga.$(OBJEXT) conffile.$(OBJEXT)
+	tayga.$(OBJEXT) conffile.$(OBJEXT) thread.$(OBJEXT)
 tayga_OBJECTS = $(am_tayga_OBJECTS)
 tayga_LDADD = $(LDADD)
 DEFAULT_INCLUDES = -I.@am__isrc@
@@ -130,6 +130,7 @@ INSTALL_STRIP_PROGRAM = @INSTALL_STRIP_PROGRAM@
 LDFLAGS = @LDFLAGS@
 LIBOBJS = @LIBOBJS@
 LIBS = @LIBS@
+LIBS+= -lpthread
 LTLIBOBJS = @LTLIBOBJS@
 MAKEINFO = @MAKEINFO@
 MKDIR_P = @MKDIR_P@
@@ -191,7 +192,7 @@ top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 dist_sysconf_DATA = tayga.conf.example
 dist_man_MANS = tayga.8 tayga.conf.5
-tayga_SOURCES = nat64.c addrmap.c dynamic.c tayga.c conffile.c tayga.h list.h
+tayga_SOURCES = nat64.c addrmap.c dynamic.c tayga.c conffile.c tayga.h list.h thread.c thread.h
 all: config.h
 	$(MAKE) $(AM_MAKEFLAGS) all-am
 

@@ -22,6 +22,7 @@
 #include <getopt.h>
 #include <pwd.h>
 #include <grp.h>
+#include <thread.h>
 
 #define USAGE_TEXT	\
 "Usage: %s [-c|--config CONFIGFILE] [-d] [-n|--nodetach] [-u|--user USERID]\n" \
@@ -84,6 +85,7 @@ void read_random_bytes(void *d, int len)
 	}
 }
 
+#ifdef __Linux__
 static void tun_setup(int do_mktun, int do_rmtun)
 {
 	struct ifreq ifr;
@@ -161,6 +163,113 @@ static void tun_setup(int do_mktun, int do_rmtun)
 	slog(LOG_INFO, "Using tun device %s with MTU %d\n", gcfg->tundev,
 			gcfg->mtu);
 }
+#endif
+
+#ifdef __FreeBSD__
+static void tun_setup(int do_mktun, int do_rmtun)
+{
+	struct ifreq ifr;
+	int fd, do_rename = 0, multi_af;
+	char devname[64];
+
+	if (strncmp(gcfg->tundev, "tun", 3))
+		do_rename = 1;
+
+	if ((do_mktun || do_rmtun) && do_rename)
+	{
+		slog(LOG_CRIT,
+			"tunnel interface name needs to match tun[0-9]+ pattern "
+				"for --mktun to work\n");
+		exit(1);
+	}
+
+	snprintf(devname, sizeof(devname), "/dev/%s", do_rename ? "tun" : gcfg->tundev);
+
+	gcfg->tun_fd = open(devname, O_RDWR);
+	if (gcfg->tun_fd < 0) {
+		slog(LOG_CRIT, "Unable to open %s, aborting: %s\n",
+				devname, strerror(errno));
+		exit(1);
+	}
+
+	if (do_mktun) {
+		slog(LOG_NOTICE, "Created persistent tun device %s\n",
+				gcfg->tundev);
+		return;
+	} else if (do_rmtun) {
+
+		/* Close socket before removal */
+		close(gcfg->tun_fd);
+
+		fd = socket(PF_INET, SOCK_DGRAM, 0);
+		if (fd < 0) {
+			slog(LOG_CRIT, "Unable to create control socket, aborting: %s\n",
+					strerror(errno));
+			exit(1);
+		}
+
+		memset(&ifr, 0, sizeof(ifr));
+		strcpy(ifr.ifr_name, gcfg->tundev);
+		if (ioctl(fd, SIOCIFDESTROY, &ifr) < 0) {
+			slog(LOG_CRIT, "Unable to destroy interface %s, aborting: %s\n",
+					gcfg->tundev, strerror(errno));
+			exit(1);
+		}
+
+		close(fd);
+
+		slog(LOG_NOTICE, "Removed persistent tun device %s\n",
+				gcfg->tundev);
+		return;
+	}
+
+	/* Set multi-AF mode */
+	multi_af = 1;
+	if (ioctl(gcfg->tun_fd, TUNSIFHEAD, &multi_af) < 0) {
+			slog(LOG_CRIT, "Unable to set multi-AF on %s, "
+					"aborting: %s\n", gcfg->tundev,
+					strerror(errno));
+			exit(1);
+	}
+
+	slog(LOG_CRIT, "Multi-AF mode set on %s\n", gcfg->tundev);
+
+	set_nonblock(gcfg->tun_fd);
+
+	fd = socket(PF_INET, SOCK_DGRAM, 0);
+	if (fd < 0) {
+		slog(LOG_CRIT, "Unable to create socket, aborting: %s\n",
+				strerror(errno));
+		exit(1);
+	}
+
+	if (do_rename) {
+		memset(&ifr, 0, sizeof(ifr));
+		strcpy(ifr.ifr_name, fdevname(gcfg->tun_fd));
+		ifr.ifr_data = gcfg->tundev;
+		if (ioctl(fd, SIOCSIFNAME, &ifr) < 0) {
+			slog(LOG_CRIT, "Unable to rename interface %s to %s, aborting: %s\n",
+					fdevname(gcfg->tun_fd), gcfg->tundev,
+					strerror(errno));
+			exit(1);
+		}
+	}
+
+	memset(&ifr, 0, sizeof(ifr));
+	strcpy(ifr.ifr_name, gcfg->tundev);
+	if (ioctl(fd, SIOCGIFMTU, &ifr) < 0) {
+		slog(LOG_CRIT, "Unable to query MTU, aborting: %s\n",
+				strerror(errno));
+		exit(1);
+	}
+	close(fd);
+
+	gcfg->mtu = ifr.ifr_mtu;
+
+	slog(LOG_INFO, "Using tun device %s with MTU %d\n", gcfg->tundev,
+			gcfg->mtu);
+}
+#endif
 
 static void signal_handler(int signal)
 {
@@ -186,46 +295,6 @@ static void signal_setup(void)
 	sigaction(SIGUSR2, &act, NULL);
 	sigaction(SIGQUIT, &act, NULL);
 	sigaction(SIGTERM, &act, NULL);
-}
-
-static void read_from_tun(void)
-{
-	int ret;
-	struct tun_pi *pi = (struct tun_pi *)gcfg->recv_buf;
-	struct pkt pbuf, *p = &pbuf;
-
-	ret = read(gcfg->tun_fd, gcfg->recv_buf, gcfg->recv_buf_size);
-	if (ret < 0) {
-		if (errno == EAGAIN)
-			return;
-		slog(LOG_ERR, "received error when reading from tun "
-				"device: %s\n", strerror(errno));
-		return;
-	}
-	if (ret < sizeof(struct tun_pi)) {
-		slog(LOG_WARNING, "short read from tun device "
-				"(%d bytes)\n", ret);
-		return;
-	}
-	if (ret == gcfg->recv_buf_size) {
-		slog(LOG_WARNING, "dropping oversized packet\n");
-		return;
-	}
-	memset(p, 0, sizeof(struct pkt));
-	p->data = gcfg->recv_buf + sizeof(struct tun_pi);
-	p->data_len = ret - sizeof(struct tun_pi);
-	switch (ntohs(pi->proto)) {
-	case ETH_P_IP:
-		handle_ip4(p);
-		break;
-	case ETH_P_IPV6:
-		handle_ip6(p);
-		break;
-	default:
-		slog(LOG_WARNING, "Dropping unknown proto %04x from "
-				"tun device\n", ntohs(pi->proto));
-		break;
-	}
 }
 
 static void read_from_signalfd(void)
@@ -523,12 +592,10 @@ int main(int argc, char **argv)
 	if (gcfg->cache_size)
 		create_cache();
 
-	gcfg->recv_buf = (uint8_t *)malloc(gcfg->recv_buf_size);
-	if (!gcfg->recv_buf) {
-		slog(LOG_CRIT, "Error: unable to allocate %d bytes for "
-				"receive buffer\n", gcfg->recv_buf_size);
-		exit(1);
-	}
+
+	init_buf_queue();
+	init_workers();
+	
 
 	memset(pollfds, 0, 2 * sizeof(struct pollfd));
 	pollfds[0].fd = signalfds[0];
@@ -549,19 +616,8 @@ int main(int argc, char **argv)
 		if (pollfds[0].revents)
 			read_from_signalfd();
 		if (pollfds[1].revents)
-			read_from_tun();
-		if (gcfg->cache_size && (gcfg->last_cache_maint +
-						CACHE_CHECK_INTERVAL < now ||
-					gcfg->last_cache_maint > now)) {
-			addrmap_maint();
-			gcfg->last_cache_maint = now;
-		}
-		if (gcfg->dynamic_pool && (gcfg->last_dynamic_maint +
-						POOL_CHECK_INTERVAL < now ||
-					gcfg->last_dynamic_maint > now)) {
-			dynamic_maint(gcfg->dynamic_pool, 0);
-			gcfg->last_dynamic_maint = now;
-		}
+			thread_read_from_tun();
+		
 	}
 
 	return 0;

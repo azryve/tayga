@@ -31,13 +31,44 @@
 #include <syslog.h>
 #include <errno.h>
 #include <time.h>
+#ifdef __Linux__
 #include <linux/if.h>
 #include <linux/if_tun.h>
 #include <linux/if_ether.h>
+#endif
+#ifdef __FreeBSD__
+#include <net/if.h>
+#include <net/if_tun.h>
+#include <netinet/if_ether.h>
+#include <net/ethernet.h>
+#include <sys/uio.h>
+#endif
+
 
 #include "list.h"
 #include "config.h"
+#include "thread.h"
 
+
+#ifdef __Linux__
+#define	TUN_SET_PROTO(_pi, _af)			{ (_pi)->flags = 0; (_pi)->proto = htons(_af); }
+#define	TUN_GET_PROTO(_pi)			ntohs((_pi)->proto)
+#endif
+
+#ifdef __FreeBSD__
+#define s6_addr8  __u6_addr.__u6_addr8
+#define s6_addr16 __u6_addr.__u6_addr16
+#define s6_addr32 __u6_addr.__u6_addr32
+
+struct tun_pi {
+	int	proto;
+};
+
+#define ETH_P_IP AF_INET
+#define	ETH_P_IPV6 AF_INET6
+#define	TUN_SET_PROTO(_pi, _af)			{ (_pi)->proto = htonl(_af); }
+#define	TUN_GET_PROTO(_pi)			ntohl((_pi)->proto)
+#endif
 
 /* Configuration knobs */
 
@@ -111,6 +142,19 @@ struct icmp {
 
 /* TAYGA data definitions */
 
+union hdr_u {
+       struct {
+               struct tun_pi pi;
+               struct ip6 ip6;
+               struct ip6_frag ip6_frag;
+       } __attribute__ ((__packed__)) header6;
+       struct {
+               struct tun_pi pi;
+               struct ip4 ip4;
+       } __attribute__ ((__packed__)) header4;
+};
+
+
 struct pkt {
 	struct ip4 *ip4;
 	struct ip6 *ip6;
@@ -120,6 +164,9 @@ struct pkt {
 	uint8_t *data;
 	uint32_t data_len;
 	uint32_t header_len; /* inc IP hdr for v4 but excl IP hdr for v6 */
+	uint8_t flush_flag;
+        union hdr_u new_header;
+	uint32_t new_header_len;
 };
 
 enum {
@@ -212,7 +259,6 @@ struct config {
 	int tun_fd;
 
 	uint16_t mtu;
-	uint8_t *recv_buf;
 
 	uint32_t rand[8];
 	struct list_head cache_pool;
@@ -224,8 +270,22 @@ struct config {
 	time_t last_dynamic_maint;
 	time_t last_map_write;
 	int map_write_pending;
+
+	uint8_t bind_threads_flag;
+	uint32_t buffer_count;
+	uint32_t writer_count;
+	struct buf_queue *bq;
+	struct sworker translator;
+	struct sworker *writers;
 };
 
+struct sbuf {
+	struct sbuf *next;
+	struct pkt pbuf;
+        uint8_t recv_buf[];
+};
+
+typedef struct sbuf sbuf_t;
 
 /* Macros and static functions */
 

@@ -332,6 +332,36 @@ static void config_strict_fh(int ln, int arg_count, char **args)
 	}
 }
 
+static void config_buffers(int ln, int arg_count, char **args) { 
+	if(!(gcfg->buffer_count = strtoul(args[0], NULL, 10))) {
+		slog(LOG_CRIT, "Error: invalid value for buffer-count\n");
+                exit(1);
+	}
+	
+}
+static void config_writers(int ln, int arg_count, char **args) {
+	if(!(gcfg->writer_count = strtoul(args[0], NULL, 10))) {
+                slog(LOG_CRIT, "Error: invalid value for writer-count\n");
+                exit(1); 
+        }
+	if((gcfg->writer_count & (gcfg->writer_count - 1))) {
+		 slog(LOG_CRIT, "Error: value for writer-count should be in power of two\n");
+                exit(1);
+	}
+}
+
+static void config_bind_threads(int ln, int arg_count, char **args) {
+	if (!strcasecmp(args[0], "false") || !strcasecmp(args[0], "off") || !strcasecmp(args[0], "0")) {
+                gcfg->bind_threads_flag = 0;
+	} else if (!strcasecmp(args[0], "true") || !strcasecmp(args[0], "on") || !strcasecmp(args[0], "1")) {
+                gcfg->bind_threads_flag = 1;
+        } else {
+		slog(LOG_CRIT, "Error: invalid value for bind-threads\n");
+                exit(1);
+	}
+	
+}
+
 struct {
 	char *name;
 	void (*config_func)(int ln, int arg_count, char **args);
@@ -345,6 +375,9 @@ struct {
 	{ "dynamic-pool", config_dynamic_pool, 1 },
 	{ "data-dir", config_data_dir, 1 },
 	{ "strict-frag-hdr", config_strict_fh, 1 },
+	{ "buffer-count", config_buffers, 1 },
+	{ "writer-count", config_writers, 1 },
+	{ "bind-threads", config_bind_threads, 1 },
 	{ NULL, NULL, 0 }
 };
 
@@ -367,7 +400,6 @@ void read_config(char *conffile)
 	if (!gcfg)
 		goto malloc_fail;
 	memset(gcfg, 0, sizeof(struct config));
-	gcfg->recv_buf_size = 65536 + sizeof(struct tun_pi);
 	INIT_LIST_HEAD(&gcfg->map4_list);
 	INIT_LIST_HEAD(&gcfg->map6_list);
 	gcfg->dyn_min_lease = 7200 + 4 * 60; /* just over two hours */
@@ -378,6 +410,9 @@ void read_config(char *conffile)
 	gcfg->allow_ident_gen = 1;
 	gcfg->ipv6_offlink_mtu = 1280;
 	gcfg->lazy_frag_hdr = 1;
+	gcfg->buffer_count = BUFFER_COUNT;
+	gcfg->writer_count = WRITER_COUNT;
+	gcfg->bind_threads_flag = BIND_THREADS;
 	INIT_LIST_HEAD(&gcfg->cache_pool);
 	INIT_LIST_HEAD(&gcfg->cache_active);
 
