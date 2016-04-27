@@ -408,7 +408,7 @@ void read_config(char *conffile)
 	gcfg->hash_bits = 7;
 	gcfg->cache_size = 8192;
 	gcfg->allow_ident_gen = 1;
-	gcfg->ipv6_offlink_mtu = 1280;
+	gcfg->ipv6_offlink_mtu = 9000;
 	gcfg->lazy_frag_hdr = 1;
 	gcfg->buffer_count = BUFFER_COUNT;
 	gcfg->writer_count = WRITER_COUNT;
