@@ -8,6 +8,12 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/sysctl.h>
+#include <assert.h>
+
+#ifdef __FreeBSD__
+#include <netinet/tcp.h>
+#include <netinet/udp.h>
+#endif
 
 extern struct config *gcfg;
 extern time_t now;
@@ -63,21 +69,47 @@ static inline void enq_chain_to_translate(sbuf_t *head, sbuf_t *tail)
 
 static inline uint calc_handler_id(sbuf_t *sb)
 {
-       uint id = 0;
+       size_t id = 0;
+       size_t i;
        union hdr_u *hdr = (union hdr_u*) sb->recv_buf;
        struct tun_pi *pi = (struct tun_pi*) sb->recv_buf;
+        void *l4hdr;
+        uint8_t l4proto;
+        struct tcphdr *tcp;
+        struct udphdr *udp;
 
        switch (TUN_GET_PROTO(pi)) {
         case ETH_P_IP:
-	       id = htonl(hdr->header4.ip4.src.s_addr) ^ 
-		    htonl(hdr->header4.ip4.dest.s_addr);
-	       id *= 59;
-               break;
+            l4proto = hdr->header4.ip4.proto;
+            l4hdr = ((uint8_t *) &hdr->header4 + sizeof(hdr->header4));
+	       id += hdr->header4.ip4.src.s_addr + hdr->header4.ip4.dest.s_addr;
+           break;
         case ETH_P_IPV6:
-               id = htonl(hdr->header6.ip6.ver_tc_fl) >> 12;
+                l4proto = hdr->header6.ip6.next_header;
+                l4hdr = ((uint8_t *) &hdr->header6 + sizeof(hdr->header6) - sizeof(hdr->header6.ip6_frag));
+
+               for (i = 0; i < sizeof(hdr->header6.ip6.src); i++)
+                    id += hdr->header6.ip6.src.s6_addr[i];
+
+               for (i = 0; i < sizeof(hdr->header6.ip6.dest); i++)
+                    id += hdr->header6.ip6.dest.s6_addr[i];
+
                break;
+        default:
+            assert(0);
         }
-       return id & (gcfg->writer_count - 1);
+        switch(l4proto) {
+        case IPPROTO_TCP:
+            tcp = l4hdr;
+            id += htons(tcp->th_sport) + htons(tcp->th_dport);
+            break;
+        case IPPROTO_UDP:
+            udp = l4hdr;
+            id += htons(udp->uh_sport) + htons(udp->uh_dport);
+            break;
+        }
+
+       return id % gcfg->writer_count;
 }
 
 static void enq_chain_to_flush(sbuf_t *head, sbuf_t *tail)
