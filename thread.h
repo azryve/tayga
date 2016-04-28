@@ -11,7 +11,7 @@
 #define WRITER_COUNT 2		//supposed to be a power of two 
 #define BIND_THREADS 1
 
-typedef unsigned int uint;
+typedef uint32_t uint;
 
 struct sbuf_chain {
        struct sbuf *head;

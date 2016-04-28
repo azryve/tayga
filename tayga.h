@@ -282,7 +282,7 @@ struct config {
 struct sbuf {
 	struct sbuf *next;
 	struct pkt pbuf;
-        uint8_t recv_buf[];
+	uint8_t recv_buf[];
 };
 
 typedef struct sbuf sbuf_t;

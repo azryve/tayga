@@ -151,17 +151,19 @@ static inline void __grab_sbuf_chain(sbuf_t **sb, struct sbuf_chain *chain)
 	chain->head = chain->tail = NULL;
 }
 
-static void bind_thread(pthread_t t, uint np) {
+static void bind_thread(pthread_t t, uint np)
+{
 	cpuset_t cset;
 	CPU_ZERO(&cset);
 	CPU_SET(np,&cset);
-	if(pthread_setaffinity_np(t, sizeof(cpuset_t), &cset)) {
+	if (pthread_setaffinity_np(t, sizeof(cpuset_t), &cset)) {
 		slog(LOG_CRIT, "Error: unable to bind thread %u to cpu %u: %s", *((uint*) t), np, strerror(errno));
 		exit(1);
 	}
 }
 
-static int num_cpu() {
+static int num_cpu()
+{
 	int ret;
 	int mib[4];
 	size_t len = sizeof(ret); 
@@ -169,7 +171,7 @@ static int num_cpu() {
 	/* set the mib for hw.ncpu */
 	mib[0] = CTL_HW;
 	mib[1] = HW_NCPU;
-	sysctl( mib, 2, &ret, &len, NULL, 0 );
+	sysctl(mib, 2, &ret, &len, NULL, 0 );
 
 	if (ret < 1)
 		ret = 1;
@@ -196,7 +198,7 @@ void init_buf_queue()
 				exit(1);
 	} 
 	
-	if ( pthread_mutex_init(&bq->freechain.pmtx, 0)) {
+	if (pthread_mutex_init(&bq->freechain.pmtx, 0)) {
 		slog(LOG_CRIT, "Error: unable to init receive queue mutex");
 				exit(1);
 	}
@@ -259,7 +261,8 @@ void init_workers(void)
 		}
 }
 
-static inline void flush_pkt(struct pkt *p, struct iovec *iov){
+static inline void flush_pkt(struct pkt *p, struct iovec *iov)
+{
 
 	iov[0].iov_base = &p->new_header;
 	iov[0].iov_len = p->new_header_len;
